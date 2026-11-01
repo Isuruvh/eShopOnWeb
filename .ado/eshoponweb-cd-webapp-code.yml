@@ -1,59 +1,56 @@
-#NAME THE PIPELINE SAME AS FILE (WITHOUT ".yml")
+# Name of the pipeline matches the file name (e.g., eshoponweb-cd.yml)
+name: eshoponweb-cd
 
-# Trigger CD when CI executed succesfully
-resources:
-  pipelines:
-    - pipeline: eshoponweb-ci
-      source: eshoponweb-ci # given pipeline name
-      trigger: true
+# Trigger CD when CI workflow executes successfully
+on:
+  workflow_run:
+    workflows: ["eshoponweb-ci"] # Replace with the exact name of your CI GitHub workflow
+    types:
+      - completed
 
+env:
+  RESOURCE_GROUP: 'DefaultResourceGroup-EAU'
+  LOCATION: 'australiaeast'
+  TEMPLATE_FILE: 'webapp.bicep'
+  WEBAPP_NAME: 'az400-webapp-NAME'
+  AZURE_SERVICE_CONNECTION: 'azure subs' # Retained for reference, but Azure login uses GitHub Secrets
 
-variables:
-  resource-group: 'AZ400-EWebShop-NAME'
-  location: 'centralus'
-  templateFile: 'webapp.bicep'
-  subscriptionid: 'YOUR-SUBSCRIPTION-ID'
-  azureserviceconnection: 'azure subs'
-  webappname: 'az400-webapp-NAME'
-  # webappname: 'webapp-windows-eshop'
-  
+jobs:
+  deploy:
+    name: Deploy to WebApp
+    runs-on: windows-latest
+    # Only run if the triggering CI workflow was successful
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
-stages:
-- stage: Deploy
-  displayName: Deploy to WebApp
-  jobs:
-  - job: Deploy
-    pool:
-      vmImage: windows-latest
     steps:
-    #download artifacts
-    - download: eshoponweb-ci
-  
-    # Deploy App Service Plan + App Service using Bicep
-    - task: AzureResourceManagerTemplateDeployment@3
-      displayName: Deploy App Service Plan Bicep
-      inputs:
-        deploymentScope: 'Resource Group'
-        azureResourceManagerConnection: '$(azureserviceconnection)'
-        subscriptionId: '$(subscriptionid)'
-        action: 'Create Or Update Resource Group'
-        resourceGroupName: '$(resource-group)'
-        location: '$(location)'
-        templateLocation: 'Linked artifact'
-        csmFile: '$(Pipeline.Workspace)/eshoponweb-ci/Bicep/$(templateFile)'
-        overrideParameters: '-webAppName $(webappname) -location $(location)'
-        deploymentMode: 'Incremental'
-        deploymentOutputs: 'asp-json'
-    
-    #Publish Website to Azure WebApp
-    - task: AzureRmWebAppDeployment@4
-      displayName: Publish Website to WebApp
-      inputs:
-        ConnectionType: 'AzureRM'
-        azureSubscription: '$(azureserviceconnection)'
-        appType: 'webApp'
-        WebAppName: '$(webappname)'
-        packageForLinux: '$(Pipeline.Workspace)/eshoponweb-ci/Website/Web.zip'
-      
+    # 1. Download artifacts from the triggering CI workflow
+    - name: Download Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: eshoponweb-ci-artifacts # Ensure this matches the artifact name uploaded in your CI workflow
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        run-id: ${{ github.event.workflow_run.id }}
 
-    
+    # 2. Log in to Azure
+    # Note: Requires setting up a Service Principal and saving credentials in GitHub Secrets
+    - name: Azure Login
+      uses: azure/login@v2
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    # 3. Deploy App Service Plan + App Service using Bicep
+    - name: Deploy App Service Plan Bicep
+      uses: azure/arm-deploy@v2
+      with:
+        subscriptionId: '7213a958-80d0-4a44-97a0-d0b8c0ed65ce'
+        resourceGroupName: ${{ env.RESOURCE_GROUP }}
+        template: './Bicep/${{ env.TEMPLATE_FILE }}' # Adjust path depending on where artifacts unzip
+        parameters: webAppName=${{ env.WEBAPP_NAME }} location=${{ env.LOCATION }}
+        failOnStdErr: false
+
+    # 4. Publish Website to Azure WebApp
+    - name: Publish Website to WebApp
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name: ${{ env.WEBAPP_NAME }}
+        package: './Website/Web.zip' # Adjust path depending on where artifacts unzip
